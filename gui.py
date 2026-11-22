@@ -6,9 +6,11 @@ from client import Client
 from protocol import MAX_FILE
 
 class Window:
-    def __init__(self,root):
+    def __init__(self,root,port=7443,keys="state/keys"):
         self.root=root
         self.conn=None
+        self.port=port
+        self.keys=keys
         root.title("SFX1 安全文件传输")
         root.geometry("660x450")
         bar=ttk.Frame(root,padding=12)
@@ -23,6 +25,19 @@ class Window:
         self.status=tk.StringVar(value="请选择本地证书身份并连接。")
         ttk.Label(root,textvariable=self.status,padding=12).pack(anchor="w")
         root.protocol("WM_DELETE_WINDOW",self.quit)
+        root.after(60000,self.heartbeat)
+
+    def heartbeat(self):
+        if self.conn:
+            try:
+                self.refresh()
+            except (OSError,EOFError,ValueError) as exc:
+                self.conn.sock.close()
+                self.conn=None
+                self.user.configure(state="readonly")
+                self.files.delete(0,"end")
+                self.status.set("连接已中断：" + str(exc))
+        self.root.after(60000,self.heartbeat)
 
     def run(self,action):
         try:
@@ -34,7 +49,7 @@ class Window:
 
     def connect(self):
         self.disconnect()
-        self.conn=Client("state/keys",self.user.get())
+        self.conn=Client(self.keys,self.user.get(),self.port)
         self.user.configure(state="disabled")
         self.refresh()
 
