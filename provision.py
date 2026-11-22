@@ -1,12 +1,13 @@
 """Create fresh, local lab identities. Requires OpenSSL 3 on PATH or Git for Windows."""
 import argparse
+import ipaddress
 import os
 from pathlib import Path
 import shutil
 import subprocess
 import tempfile
 
-def provision(directory):
+def provision(directory,server_ip=None):
     directory = Path(directory)
     directory.parent.mkdir(parents=True, exist_ok=True)
     exe = shutil.which("openssl") or str(Path(os.environ.get("ProgramFiles", "")) / "Git/usr/bin/openssl.exe")
@@ -25,6 +26,8 @@ def provision(directory):
             ext = f"basicConstraints=critical,CA:FALSE\nkeyUsage=critical,digitalSignature\nextendedKeyUsage={usage}\n"
             if is_server:
                 ext += "subjectAltName=DNS:localhost,IP:127.0.0.1\n"
+                if server_ip:
+                    ext=ext.rstrip()+",IP:"+str(ipaddress.ip_address(server_ip))+"\n"
             (out/"ext.cnf").write_text(ext, encoding="ascii")
             run("x509","-req","-in","pending.csr","-CA","ca.pem","-CAkey","ca.key","-CAcreateserial","-days","14","-sha256","-extfile","ext.cnf","-out",identity+".pem")
         for name in ("ca.key","ca.srl","pending.csr","ext.cnf"):
@@ -34,6 +37,8 @@ def provision(directory):
 if __name__ == "__main__":
     parser = argparse.ArgumentParser()
     parser.add_argument("--out", default="state/keys")
-    provision(parser.parse_args().out)
+    parser.add_argument("--server-ip")
+    args=parser.parse_args()
+    provision(args.out,args.server_ip)
     print("Created CA certificate and separate server, alice and bob identities.")
 

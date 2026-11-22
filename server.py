@@ -100,10 +100,11 @@ class Handler(socketserver.BaseRequestHandler):
 if __name__=="__main__":
     parser=argparse.ArgumentParser()
     parser.add_argument("--port",type=int,default=7443)
+    parser.add_argument("--bind",default="127.0.0.1")
     parser.add_argument("--keys",default="state/keys")
     parser.add_argument("--db",default="state/data/files.sqlite")
     args=parser.parse_args()
-    with Server(("127.0.0.1",args.port),args.keys,args.db) as server:
+    with Server((args.bind,args.port),args.keys,args.db) as server:
         print("READY",server.server_address[1],flush=True)
         server.serve_forever()
 

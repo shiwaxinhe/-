@@ -6,11 +6,12 @@ from client import Client
 from protocol import MAX_FILE
 
 class Window:
-    def __init__(self,root,port=7443,keys="state/keys"):
+    def __init__(self,root,port=7443,keys="state/keys",host="localhost"):
         self.root=root
         self.conn=None
         self.port=port
         self.keys=keys
+        self.host=host
         root.title("SFX1 安全文件传输")
         root.geometry("660x450")
         bar=ttk.Frame(root,padding=12)
@@ -49,7 +50,7 @@ class Window:
 
     def connect(self):
         self.disconnect()
-        self.conn=Client(self.keys,self.user.get(),self.port)
+        self.conn=Client(self.keys,self.user.get(),self.port,self.host)
         self.user.configure(state="disabled")
         self.refresh()
 
@@ -96,7 +97,13 @@ class Window:
             self.root.destroy()
 
 if __name__=="__main__":
+    import argparse
+    parser=argparse.ArgumentParser()
+    parser.add_argument("--host",default="localhost")
+    parser.add_argument("--port",type=int,default=7443)
+    parser.add_argument("--keys",default="state/keys")
+    args=parser.parse_args()
     root=tk.Tk()
-    Window(root)
+    Window(root,args.port,args.keys,args.host)
     root.mainloop()
 

@@ -3,12 +3,12 @@ import socket
 from protocol import context,keepalive,receive,send
 
 class Client:
-    def __init__(self,keys,user,port=7443):
+    def __init__(self,keys,user,port=7443,host="localhost"):
         ctx=context(keys,user)
-        raw=socket.create_connection(("127.0.0.1",port),5)
+        raw=socket.create_connection((host,port),5)
         try:
             keepalive(raw)
-            self.sock=ctx.wrap_socket(raw,server_hostname="localhost")
+            self.sock=ctx.wrap_socket(raw,server_hostname=host)
         except BaseException:
             raw.close()
             raise
