@@ -69,8 +69,13 @@ def verify(keys, port):
             jobs = [Job("PUT", "batch-upload.bin", put_path), Job("GET", "batch-source.bin", get_path)]
             rounds = []
             for attempt in (1, 2):
+                if attempt==2:
+                    # A different digest forces a second full upload on the same session.
+                    outbound=b"\x00"+outbound[1:]
+                    put_path.write_bytes(outbound)
                 results = collect(pool, jobs)
                 assert all(not row[2] for row in results), results
+                assert all(row[7]==0 and row[4]==len(inbound) for row in results)
                 ids = [row[3] for row in results]
                 assert len(set(ids + [control.session])) == 3
                 overlap = min(row[6] for row in results) - max(row[5] for row in results)

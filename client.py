@@ -1,5 +1,6 @@
 import hashlib
 import socket
+from pathlib import Path
 from protocol import context,keepalive,receive,send
 
 class Client:
@@ -13,10 +14,14 @@ class Client:
             raw.close()
             raise
         self.session=None
+        self.peer=(host,port,user,hashlib.sha256((Path(keys)/"ca.pem").read_bytes()).hexdigest())
+        self.sent_body=self.received_body=0
 
     def request(self,op,body=b"",**fields):
         send(self.sock,dict(fields,op=op),body)
-        meta,reply=receive(self.sock)
+        self.sent_body+=len(body)
+        meta,reply=receive(self.sock,frame_timeout=180)
+        self.received_body+=len(reply)
         if self.session is not None and self.session!=meta["session"]:
             raise ValueError("session changed")
         self.session=meta["session"]

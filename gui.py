@@ -1,5 +1,6 @@
 """Windows client for the SFX1 file transfer lab."""
 import argparse
+import queue
 from pathlib import Path, PureWindowsPath
 import tkinter as tk
 from tkinter import filedialog, messagebox, ttk
@@ -21,6 +22,7 @@ class Window:
         self.root, self.port, self.keys, self.host = root, port, keys, host
         self.conn = self.pool = None
         self.pending = set()
+        self.checkpoints = {}
         root.title("安全文件传输 · 实验 1B")
         root.geometry("790x490")
         bar = ttk.Frame(root, padding=8)
@@ -29,7 +31,7 @@ class Window:
         self.user.current(0)
         self.user.pack(side="left")
         actions = [("连接", self.connect), ("刷新", self.refresh), ("上传文件…", self.upload),
-                   ("下载所选…", self.download), ("断开", self.disconnect)]
+                   ("下载所选…", self.download), ("暂停传输", self.pause), ("断开", self.disconnect)]
         for label, action in actions:
             ttk.Button(bar, text=label, command=lambda fn=action: self.run(fn)).pack(side="left", padx=2)
         ttk.Label(root, text="远端文件（Ctrl / Shift 多选）").pack(anchor="w", padx=10)
@@ -78,10 +80,20 @@ class Window:
         names = [job.name.casefold() for job in jobs]
         if len(set(names)) != len(names) or self.pending.intersection(names):
             raise ValueError("本批或队列中已有同名文件，请等传输结束后再试。")
+        if self.pool.paused.is_set() and self.pending:
+            raise ValueError("请等正在暂停的任务结束后再重选")
+        self.pool.paused.clear()
+        for name in names:
+            self.checkpoints.pop(name, None)
         self.pending.update(names)
         for job in jobs:
             self.pool.submit(job)
         self.status.set(f"正在传输，剩余 {len(self.pending)} 项")
+
+    def pause(self):
+        if self.pending:
+            self.pool.paused.set()
+            self.status.set("将在分块边界暂停；重选相同文件和目录即可继续。")
 
     def upload(self):
         paths = list(map(Path, filedialog.askopenfilenames(parent=self.root)))
@@ -103,10 +115,20 @@ class Window:
     def poll(self):
         changed = False
         if self.pool:
-            for lane, job, error, sid, size, start, end in self.pool.completed():
+            while True:
+                try:
+                    name, offset = self.pool.progress.get_nowait()
+                except queue.Empty:
+                    break
+                self.checkpoints[name.casefold()] = offset
+                self.status.set(f"{name}  |  已保存 {offset:,} B")
+            for lane, job, error, sid, size, start, end, resumed in self.pool.completed():
                 self.pending.discard(job.name.casefold())
                 detail = error or f"{size} B  {sid[:8]}  {(end-start)*1000:.0f} ms"
-                self.history.insert("end", f"{'失败' if error else '完成'}  {lane+1}  {job.operation}  {job.name}  {detail}")
+                if resumed:
+                    detail += f"  从 {resumed} B 续传"
+                state = "暂停" if error.startswith("暂停于") else ("失败" if error else "完成")
+                self.history.insert("end", f"{state}  {lane+1}  {job.operation}  {job.name}  {detail}")
                 self.history.see("end")
                 changed = True
         if changed:
