@@ -1,109 +1,157 @@
-"""Windows desktop client. Launch from the source directory after provisioning."""
-from pathlib import Path
+"""Windows client for the SFX1 file transfer lab."""
+import argparse
+from pathlib import Path, PureWindowsPath
 import tkinter as tk
-from tkinter import ttk,filedialog,messagebox
+from tkinter import filedialog, messagebox, ttk
+
 from client import Client
-from protocol import MAX_FILE
+from transfers import Job, Transfers
+
+
+def local_name(name):
+    path = PureWindowsPath(name)
+    if (path.name != name or path.is_reserved() or name.endswith((" ", "."))
+            or any(c in '<>:"/\\|?*' or ord(c) < 32 for c in name)):
+        raise ValueError(f"无法保存为 Windows 文件名：{name}")
+    return name
+
 
 class Window:
-    def __init__(self,root,port=7443,keys="state/keys",host="localhost"):
-        self.root=root
-        self.conn=None
-        self.port=port
-        self.keys=keys
-        self.host=host
-        root.title("SFX1 安全文件传输")
-        root.geometry("660x450")
-        bar=ttk.Frame(root,padding=12)
+    def __init__(self, root, port=7443, keys="state/keys", host="localhost"):
+        self.root, self.port, self.keys, self.host = root, port, keys, host
+        self.conn = self.pool = None
+        self.pending = set()
+        root.title("安全文件传输 · 实验 1B")
+        root.geometry("790x490")
+        bar = ttk.Frame(root, padding=8)
         bar.pack(fill="x")
-        self.user=ttk.Combobox(bar,values=["alice","bob"],state="readonly",width=9)
+        self.user = ttk.Combobox(bar, values=["alice", "bob"], state="readonly", width=8)
         self.user.current(0)
         self.user.pack(side="left")
-        for label,action in [("连接",self.connect),("刷新",self.refresh),("上传",self.upload),("下载所选",self.download),("断开",self.disconnect)]:
-            ttk.Button(bar,text=label,command=lambda a=action:self.run(a)).pack(side="left",padx=3)
-        self.files=tk.Listbox(root,font=("Microsoft YaHei",12))
-        self.files.pack(fill="both",expand=True,padx=12)
-        self.status=tk.StringVar(value="请选择本地证书身份并连接。")
-        ttk.Label(root,textvariable=self.status,padding=12).pack(anchor="w")
-        root.protocol("WM_DELETE_WINDOW",self.quit)
-        root.after(60000,self.heartbeat)
+        actions = [("连接", self.connect), ("刷新", self.refresh), ("上传文件…", self.upload),
+                   ("下载所选…", self.download), ("断开", self.disconnect)]
+        for label, action in actions:
+            ttk.Button(bar, text=label, command=lambda fn=action: self.run(fn)).pack(side="left", padx=2)
+        ttk.Label(root, text="远端文件（Ctrl / Shift 多选）").pack(anchor="w", padx=10)
+        self.files = tk.Listbox(root, selectmode="extended", exportselection=False, height=7)
+        self.files.pack(fill="both", expand=True, padx=10)
+        ttk.Label(root, text="传输记录").pack(anchor="w", padx=10, pady=(8, 0))
+        self.history = tk.Listbox(root, height=7, font=("Consolas", 10))
+        self.history.pack(fill="both", expand=True, padx=10)
+        self.status = tk.StringVar(value="选择证书身份后点击连接。")
+        ttk.Label(root, textvariable=self.status, padding=8).pack(anchor="w")
+        root.protocol("WM_DELETE_WINDOW", self.quit)
+        self.tick = root.after(80, self.poll)
+        self.pulse = root.after(60000, self.heartbeat)
 
-    def heartbeat(self):
-        if self.conn:
-            try:
-                self.refresh()
-            except (OSError,EOFError,ValueError) as exc:
-                self.conn.sock.close()
-                self.conn=None
-                self.user.configure(state="readonly")
-                self.files.delete(0,"end")
-                self.status.set("连接已中断：" + str(exc))
-        self.root.after(60000,self.heartbeat)
-
-    def run(self,action):
+    def run(self, action):
         try:
-            if not self.conn and action not in (self.connect,self.disconnect):
+            if not self.conn and action not in (self.connect, self.disconnect):
                 raise ValueError("请先连接服务器")
             action()
         except Exception as exc:
-            messagebox.showerror("操作失败",str(exc))
+            messagebox.showerror("操作失败", str(exc), parent=self.root)
 
     def connect(self):
         self.disconnect()
-        self.conn=Client(self.keys,self.user.get(),self.port,self.host)
+        self.conn = Client(self.keys, self.user.get(), self.port, self.host)
+        self.pool = Transfers(self.keys, self.user.get(), self.port, self.host)
         self.user.configure(state="disabled")
         self.refresh()
 
     def refresh(self):
-        names=self.conn.list()
-        self.files.delete(0,"end")
+        names = self.conn.list()
+        self.files.delete(0, "end")
         for name in names:
-            self.files.insert("end",name)
-        self.status.set(f"{self.user.get()}  |  TLS 1.3  |  会话 {self.conn.session[:12]}  |  {len(names)} 个文件")
+            self.files.insert("end", name)
+        self.status.set(f"{self.user.get()}  |  会话 {self.conn.session[:12]}  |  {len(names)} 个文件")
+
+    def heartbeat(self):
+        if self.conn:
+            try:
+                self.conn.list()
+            except (OSError, EOFError, ValueError) as exc:
+                self.status.set("控制连接中断，请在传输结束后重新连接。 " + str(exc))
+        self.pulse = self.root.after(60000, self.heartbeat)
+
+    def enqueue(self, jobs):
+        names = [job.name.casefold() for job in jobs]
+        if len(set(names)) != len(names) or self.pending.intersection(names):
+            raise ValueError("本批或队列中已有同名文件，请等传输结束后再试。")
+        self.pending.update(names)
+        for job in jobs:
+            self.pool.submit(job)
+        self.status.set(f"正在传输，剩余 {len(self.pending)} 项")
 
     def upload(self):
-        name=filedialog.askopenfilename()
-        if name:
-            path=Path(name)
-            with path.open("rb") as f:
-                data=f.read(MAX_FILE+1)
-            self.conn.upload(path.name,data)
-            self.refresh()
+        paths = list(map(Path, filedialog.askopenfilenames(parent=self.root)))
+        if paths:
+            self.enqueue([Job("PUT", path.name, path) for path in paths])
 
     def download(self):
-        idx=self.files.curselection()
-        if not idx:
-            raise ValueError("请先选择文件")
-        name=self.files.get(idx[0])
-        dest=filedialog.asksaveasfilename(initialfile=Path(name).name)
-        if dest:
-            Path(dest).write_bytes(self.conn.download(name))
-            self.status.set("下载完成，SHA-256 已校验。")
+        names = [local_name(self.files.get(i)) for i in self.files.curselection()]
+        if not names:
+            raise ValueError("请先在远端列表选择文件")
+        directory = filedialog.askdirectory(parent=self.root)
+        if directory:
+            jobs = [Job("GET", name, Path(directory) / name) for name in names]
+            if any(job.path.exists() for job in jobs) and not messagebox.askyesno(
+                    "确认覆盖", "目标目录中已有同名文件，是否替换？", parent=self.root):
+                return
+            self.enqueue(jobs)
+
+    def poll(self):
+        changed = False
+        if self.pool:
+            for lane, job, error, sid, size, start, end in self.pool.completed():
+                self.pending.discard(job.name.casefold())
+                detail = error or f"{size} B  {sid[:8]}  {(end-start)*1000:.0f} ms"
+                self.history.insert("end", f"{'失败' if error else '完成'}  {lane+1}  {job.operation}  {job.name}  {detail}")
+                self.history.see("end")
+                changed = True
+        if changed:
+            if self.pending:
+                self.status.set(f"正在传输，剩余 {len(self.pending)} 项")
+            else:
+                try:
+                    self.refresh()
+                except (OSError, EOFError, ValueError) as exc:
+                    self.status.set("刷新失败：" + str(exc))
+        self.tick = self.root.after(80, self.poll)
 
     def disconnect(self):
-        try:
-            if self.conn:
+        if self.pending:
+            raise ValueError("请等待当前传输完成后再断开")
+        if self.pool:
+            self.pool.close()
+            self.pool = None
+        if self.conn:
+            try:
                 self.conn.close()
-        finally:
-            self.conn=None
-            self.user.configure(state="readonly")
-            self.files.delete(0,"end")
-            self.status.set("已断开")
+            except (OSError, EOFError, ValueError):
+                self.conn.sock.close()
+            self.conn = None
+        self.user.configure(state="readonly")
+        self.files.delete(0, "end")
+        self.history.delete(0, "end")
+        self.status.set("已断开")
 
     def quit(self):
-        try:
-            self.disconnect()
-        finally:
-            self.root.destroy()
+        if self.pending:
+            messagebox.showinfo("传输中", "请等待传输结束后关闭窗口。", parent=self.root)
+            return
+        self.disconnect()
+        self.root.after_cancel(self.tick)
+        self.root.after_cancel(self.pulse)
+        self.root.destroy()
 
-if __name__=="__main__":
-    import argparse
-    parser=argparse.ArgumentParser()
-    parser.add_argument("--host",default="localhost")
-    parser.add_argument("--port",type=int,default=7443)
-    parser.add_argument("--keys",default="state/keys")
-    args=parser.parse_args()
-    root=tk.Tk()
-    Window(root,args.port,args.keys,args.host)
+
+if __name__ == "__main__":
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--host", default="localhost")
+    parser.add_argument("--port", type=int, default=7443)
+    parser.add_argument("--keys", default="state/keys")
+    args = parser.parse_args()
+    root = tk.Tk()
+    Window(root, args.port, args.keys, args.host)
     root.mainloop()
-
